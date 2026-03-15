@@ -6,6 +6,7 @@ services:
       - "8080:8080"
     volumes:
       - ~/models:/models
+      - ./templates:/templates
     deploy:
       resources:
         reservations:
@@ -24,6 +25,8 @@ services:
       --flash-attn on
       --jinja
       --threads 8
+      --chat-template-file /templates/chat_template.jinja
+      --checkpoint-every-n-tokens 256
       --chat-template-kwargs '{"enable_thinking": false}'
 
   open-webui:

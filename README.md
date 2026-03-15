@@ -76,6 +76,7 @@ Or manually:
 # llama.cpp server
 docker run -d --name llama-server --gpus all \
   -v ~/models:/models \
+  -v ~/templates:/templates \
   -p 8080:8080 \
   --restart unless-stopped \
   ghcr.io/ggml-org/llama.cpp:server-cuda \
@@ -87,6 +88,8 @@ docker run -d --name llama-server --gpus all \
   --flash-attn on \
   --jinja \
   --threads 8 \
+  --chat-template-file /templates/chat_template.jinja \
+  --checkpoint-every-n-tokens 256 \
   --chat-template-kwargs '{"enable_thinking": false}'
 
 # Open WebUI
@@ -138,6 +141,8 @@ Proxy: OFF (DNS only, gray cloud)
 | `--flash-attn` | on | Required for memory efficiency |
 | `--jinja` | - | Enables Jinja2 chat templates (required for Qwen3.5) |
 | `--threads` | 8 | CPU threads for prompt processing |
+| `--chat-template-file` | `/templates/chat_template.jinja` | Fixed Jinja template that preserves empty think blocks in non-thinking mode (see issue #7 below) |
+| `--checkpoint-every-n-tokens` | 256 | Create more frequent checkpoints during prefill to reduce reprocessing distance for hybrid/recurrent models (see issue #1 below) |
 | `--chat-template-kwargs` | `{"enable_thinking": false}` | Disable thinking mode by default (saves tokens) |
 
 ### VRAM Budget
@@ -229,13 +234,35 @@ def parse_json_list(content: str) -> list | None:
 - When thinking is enabled, grammar/structured output is completely bypassed ([#20345](https://github.com/ggml-org/llama.cpp/issues/20345))
 - On Windows, use: `--chat-template-kwargs "{\"enable_thinking\":false}"`
 
-### 5. Docker Image Version
+### 6. Structured JSON Output
+
+- `response_format: {"type": "json_object"}` does **NOT** work -- still wraps output in markdown fences
+- `response_format: {"type": "json_schema", "json_schema": {...}}` **WORKS** -- grammar constrained decoding enforces valid JSON
+- Fixed in PR [#20223](https://github.com/ggml-org/llama.cpp/pull/20223) (commit 62b8143, merged 3/8), included in b8323+
+- ~23% slower than unconstrained output, but eliminates parse failures entirely
+- Use `json_schema` mode instead of `json_object` for reliable structured output
+
+### 7. Jinja Template Think Block Bug (Multi-turn)
+
+**Symptom**: In multi-turn conversations with `enable_thinking: false`, the model reprocesses the full prompt on every turn even when the conversation prefix hasn't changed.
+
+**Root Cause**: The default Jinja template injects `<think>\n\n</think>\n\n` before generation when thinking is disabled. On the next turn, the template strips the `</think>` tag from the previous assistant message's history. From llama.cpp's perspective, the prompt changed, triggering full reprocessing.
+
+**Fix**: Use the patched template in `templates/chat_template.jinja` (from [Reddit r/LocalLLaMA](https://reddit.com/r/LocalLLaMA/comments/1rt0g8y)). The fix checks whether the think block has actual content: if yes, strip it (save context); if empty, keep it (avoid triggering reprocess).
+
+```bash
+--chat-template-file /templates/chat_template.jinja
+```
+
+**Note**: This only affects multi-turn conversations (thinking disabled). Single-request batch inference is not affected, but it's still recommended to use the patched template.
+
+### 8. Docker Image Version
 
 - Using `ghcr.io/ggml-org/llama.cpp:server-cuda` (latest)
 - Tested version: b8323 (commit 57819b8d4)
 - PR [#19877](https://github.com/ggml-org/llama.cpp/pull/19877) (merged at b8153) fixed some cache issues but NOT the GDN recurrent state problem
 
-### 6. Open WebUI Connection
+### 9. Open WebUI Connection
 
 - Open WebUI connects to llama.cpp via `OPENAI_API_BASE_URL=http://host.docker.internal:8080/v1`
 - `--add-host=host.docker.internal:host-gateway` is required for Docker-to-host networking
@@ -260,7 +287,9 @@ def parse_json_list(content: str) -> list | None:
 ├── README.md
 ├── docker-compose.yml
 ├── nginx/
-│   └── qwen-api            # nginx site config
+│   └── qwen-api              # nginx site config
+├── templates/
+│   └── chat_template.jinja   # Patched Jinja template (fixes think block reprocessing)
 └── scripts/
-    └── setup.sh             # One-shot setup script
+    └── setup.sh               # One-shot setup script
 ```
