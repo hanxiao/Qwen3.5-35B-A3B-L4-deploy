@@ -1,0 +1,30 @@
+server {
+    listen 80;
+    listen 443 ssl;
+    server_name ${DOMAIN};
+
+    # Cloudflare Origin certificates (optional, for HTTPS)
+    ssl_certificate /etc/nginx/ssl/cf-origin-cert.pem;
+    ssl_certificate_key /etc/nginx/ssl/cf-origin-key.pem;
+
+    # OpenAI-compatible API
+    location /v1 {
+        proxy_pass http://localhost:8080/v1;
+        proxy_set_header Host $host;
+        proxy_read_timeout 300s;
+    }
+
+    # Health check
+    location /health {
+        proxy_pass http://localhost:8080/health;
+    }
+
+    # Open WebUI (chat interface)
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 300s;
+    }
+}
