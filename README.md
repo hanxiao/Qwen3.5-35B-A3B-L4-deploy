@@ -172,17 +172,25 @@ The L4 has 23,034 MiB (22.5 GB) total VRAM. The Q4_K_XL model weights take ~20.5
 
 ## Known Issues / Pitfalls
 
-### 1. KV Cache Never Reuses (Prompt Caching Broken)
+### 1. KV Cache for Hybrid/Recurrent Models
 
-**Symptom**: Server log shows "forcing full prompt re-processing due to lack of cache data" on every request, even with identical system prompts.
+**Background**: Qwen3.5 uses a hybrid architecture with 30 Gated DeltaNet (linear attention, recurrent) layers + 10 full attention layers. Early llama.cpp versions had broken cache reuse for this architecture - every request triggered full prompt re-processing ("forcing full prompt re-processing due to lack of cache data").
 
-**Root Cause**: Qwen3.5 uses a hybrid architecture with 30 Gated DeltaNet (linear attention, recurrent) layers + 10 full attention layers. llama.cpp's checkpoint validation uses `n_swa = max(1, llama_model_n_swa(model))`. Since Qwen3.5 has no SWA (`sliding_window` is null in config), `n_swa` defaults to 1. The GDN recurrent state pushes `pos_min` to the end of the sequence (e.g., 1022), so `pos_min > n_swa` (1022 > 1) is always true, causing the cache to be discarded every time.
+**Root Cause**: The checkpoint validation logic used `n_swa = max(1, llama_model_n_swa(model))`. Since Qwen3.5 has no SWA (`sliding_window` is null), `n_swa` defaulted to 1. The GDN recurrent state pushed `pos_min` to the end of the sequence, so `pos_min > n_swa` was always true, discarding the cache.
 
-**Impact**: ~4x slower than it should be. Every request does full prompt re-prefill regardless of shared prefix.
+**Status**: **FIXED** in upstream llama.cpp via two PRs:
+- [#16382](https://github.com/ggml-org/llama.cpp/pull/16382) (2025-10-03): "context checkpointing for hybrid and recurrent models"
+- [#19045](https://github.com/ggml-org/llama.cpp/pull/19045) (2026-01-25): "fix prompt cache for recurrent models"
 
-**Status**: llama.cpp issue [#20225](https://github.com/ggml-org/llama.cpp/issues/20225). Community patch exists but not merged upstream. Affects ALL Qwen3.5 variants (0.6B to 397B).
+**Docker image `ghcr.io/ggml-org/llama.cpp:server-cuda` (2026-03-13+ builds) includes both fixes.** No manual patching needed.
 
-**Workaround**: None available. Accept the ~16s per request latency for now. Using `cache_prompt: true` and `id_slot` in requests has no effect due to this bug.
+**Verified Performance** (80-turn multi-turn conversation, 32K context, L4 GPU):
+- Prefill: 320-400ms stable (only processes new tokens, cache reused)
+- `cache_n` grows correctly from 0 to 32K tokens
+- Decode: 7.0-8.3s for 400 tokens (~39 tok/s)
+- Total wall time: 641s for 80 turns
+
+**Important**: Use `--checkpoint-every-n-tokens 256` for best cache hit rates with hybrid models.
 
 ### 2. `response_format: json_object` Doesn't Work
 
@@ -259,8 +267,9 @@ def parse_json_list(content: str) -> list | None:
 ### 8. Docker Image Version
 
 - Using `ghcr.io/ggml-org/llama.cpp:server-cuda` (latest)
-- Tested version: b8323 (commit 57819b8d4)
-- PR [#19877](https://github.com/ggml-org/llama.cpp/pull/19877) (merged at b8153) fixed some cache issues but NOT the GDN recurrent state problem
+- Tested version: 2026-03-13 build (includes hybrid cache fixes #16382 + #19045)
+- **Must use builds from 2026-01-25 or later** to get working KV cache for Qwen3.5
+- Older images will trigger full prompt re-processing on every turn
 
 ### 9. Open WebUI Connection
 
