@@ -1,6 +1,6 @@
 # Qwen3.5-35B-A3B on GCP L4 (24GB VRAM)
 
-Deploy Qwen3.5-35B-A3B (Unsloth Q4_K_XL GGUF, 21GB) on a single NVIDIA L4 GPU with llama.cpp server, Open WebUI, and nginx reverse proxy.
+Deploy Qwen3.5-35B-A3B Uncensored (HauhauCS Aggressive Q4_K_M GGUF, 20GB + 858MB mmproj) on a single NVIDIA L4 GPU with llama.cpp server, Open WebUI, and nginx reverse proxy. Multimodal capable via mmproj vision projector.
 
 ## Architecture
 
@@ -57,9 +57,10 @@ gcloud compute firewall-rules create allow-llama-https \
 gcloud compute ssh qwen35-serving-l4 --project=$GCP_PROJECT --zone=us-central1-a
 
 mkdir -p ~/models
-# Unsloth Q4_K_XL GGUF (~21GB)
-huggingface-cli download unsloth/Qwen3.5-35B-A3B-GGUF \
-  Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf \
+# HauhauCS Aggressive Q4_K_M GGUF (~20GB) + mmproj (~858MB)
+huggingface-cli download HauhauCS/Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive-GGUF \
+  Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf \
+  mmproj-Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf \
   --local-dir ~/models
 ```
 
@@ -83,9 +84,10 @@ docker run -d --name llama-server --gpus all \
   -p 8080:8080 \
   --restart unless-stopped \
   ghcr.io/ggml-org/llama.cpp:server-cuda \
-  --model /models/Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf \
+  --model /models/Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf \
+  --mmproj /models/mmproj-Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf \
   --host 0.0.0.0 --port 8080 \
-  --ctx-size 180224 \
+  --ctx-size 98304 \
   --parallel 1 \
   --n-gpu-layers 999 \
   --flash-attn on \
@@ -140,7 +142,8 @@ Proxy: OFF (DNS only, gray cloud)
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `--ctx-size` | 180224 | ~176K context. Max achievable on L4 24GB with Q4_K_XL + KV cache quantization. |
+| `--ctx-size` | 98304 | ~96K context. Current config on L4 24GB with Q4_K_M + mmproj + KV cache quantization. |
+| `--mmproj` | mmproj-...-f16.gguf | Multimodal vision projector (858MB). Enables image understanding. |
 | `--parallel` | 1 | Single request slot (trade-off for longer context). |
 | `--cache-type-k` | q4_0 | Quantize KV cache keys to 4-bit (saves ~75% KV VRAM vs fp16). |
 | `--cache-type-v` | q4_0 | Quantize KV cache values to 4-bit. |
@@ -154,17 +157,15 @@ Proxy: OFF (DNS only, gray cloud)
 
 ### VRAM Budget
 
-The L4 has 22,383 MiB (~22 GB) usable VRAM. Model weights (Q4_K_XL) take ~20.7 GB, leaving ~1.7 GB for KV cache + compute buffers.
+The L4 has 22,383 MiB (~22 GB) usable VRAM. Model weights (Q4_K_M, 20GB) + mmproj (858MB) take ~20.8 GB, leaving ~1.2 GB for KV cache + compute buffers.
 
 | Config | KV Cache | VRAM Status | Notes |
 |--------|----------|-------------|-------|
-| ctx=180K, parallel=1, KV q4_0 | 990 MB | OK | **Current config**. Max context with KV quantization. |
-| ctx=131K, parallel=1, KV q4_0 | 720 MB | OK | Conservative, more headroom. |
-| ctx=200K, parallel=1, KV q4_0 | ~1100 MB | OOM | Compute buffer exceeds remaining VRAM. |
-| ctx=262K, parallel=1, KV q4_0 | ~1440 MB | OOM | Would need smaller model weights. |
-| ctx=49K, parallel=1, KV fp16 | 960 MB | OK | Max without KV quantization. |
-| ctx=32K, parallel=4, KV fp16 | ~2560 MB | OOM | Original config, no longer used. |
+| ctx=98K, parallel=1, KV q4_0 | ~540 MB | OK | **Current config**. With mmproj loaded. |
+| ctx=131K, parallel=1, KV q4_0 | ~720 MB | OK | May be tight with mmproj. |
+| ctx=180K, parallel=1, KV q4_0 | ~990 MB | Borderline | Would need to drop mmproj. |
 | ctx=32K, parallel=1, KV fp16 | 640 MB | OK | Safe fallback. |
+| ctx=32K, parallel=4, KV fp16 | ~2560 MB | OOM | Not feasible with mmproj. |
 
 ### KV Cache Quantization Trade-offs
 
@@ -177,12 +178,12 @@ Using `--cache-type-k q4_0 --cache-type-v q4_0` reduces KV cache VRAM by ~75% vs
 
 ### Performance
 
+Measured 2026-03-23 with Uncensored Q4_K_M + mmproj, ctx 98K, KV q4_0, L4 GPU.
+
 | Metric | Value |
 |--------|-------|
-| Tokens/sec (single request) | ~39 tok/s |
-| Tokens/sec (4 parallel) | ~20 tok/s per request, ~80 tok/s aggregate |
-| Time per request (500 tokens out) | ~13-17s |
-| Prompt processing | ~280 tok/s (prefill) |
+| Prefill | ~1980 tok/s (2316 tok in 1.17s) |
+| Decode | 69.3 tok/s |
 
 ## Known Issues / Pitfalls
 
@@ -303,12 +304,13 @@ def parse_json_list(content: str) -> list | None:
 
 | Property | Value |
 |----------|-------|
-| Model | Qwen3.5-35B-A3B |
-| Quantization | Unsloth UD-Q4_K_XL |
-| File size | 21 GB |
-| Architecture | Hybrid: 30× Gated DeltaNet + 10× Gated Attention (MoE, 256 experts, 8 active) |
-| Layer pattern | 10 × (3 × GDN-MoE + 1 × GA-MoE) |
-| Context | 262K native, 180K max on L4 (with KV q4_0 quantization) |
+| Model | Qwen3.5-35B-A3B-Uncensored (HauhauCS Aggressive) |
+| Quantization | Q4_K_M |
+| File size | 20 GB model + 858 MB mmproj |
+| Multimodal | Yes (via mmproj vision projector, f16) |
+| Architecture | Hybrid: 30x Gated DeltaNet + 10x Gated Attention (MoE, 256 experts, 8 active) |
+| Layer pattern | 10 x (3 x GDN-MoE + 1 x GA-MoE) |
+| Context | 262K native, 98K current on L4 (with KV q4_0 + mmproj) |
 | Active params | 3B (of 35B total) |
 | Vocab | 248,320 |
 
