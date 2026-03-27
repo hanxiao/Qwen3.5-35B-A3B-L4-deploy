@@ -184,11 +184,17 @@ Measured on NVIDIA L4 (24GB VRAM), llama.cpp `server-cuda`, KV cache q4_0, think
 
 | Metric | 35B-A3B (MoE) | 27B Dense | Ratio |
 |--------|---------------|-----------|-------|
+| **Max Context (no mmproj)** | **256K** (22.4 GB VRAM) | **68K** (22.5 GB VRAM) | **3.8x** |
 | Prefill (5K tokens) | 1,877 tok/s | 557 tok/s | **3.4x** |
 | Decode | 67 tok/s | 10 tok/s | **6.7x** |
 | TTFT (short prompt) | ~67 ms | ~235 ms | **3.5x** |
 
-The MoE variant activates only 3B parameters per token (of 35B total), while the 27B dense model runs all parameters. Despite similar GGUF file sizes (~20-21GB), the MoE architecture delivers 3-7x better throughput on L4 due to dramatically lower compute per token.
+**Why the difference:**
+- **35B-A3B (hybrid MoE)**: Only 10 of 40 layers use full attention (need KV cache), the other 30 use GDN (linear, no KV cache) → can push to model's native max 256K
+- **27B Dense**: All 28 layers need KV cache → maxes out at 68K on L4 24GB with KV q4_0 quantization
+- Both use `--cache-type-k q4_0 --cache-type-v q4_0` (4-bit KV cache quantization)
+
+The MoE variant activates only 3B parameters per token (of 35B total), while the 27B dense model runs all 27B parameters. Despite similar GGUF file sizes (~20-21GB), the MoE architecture delivers 3-7x better throughput and 3.8x longer context on L4.
 
 #### Raw Timings (35B-A3B, ctx 98K)
 
