@@ -178,48 +178,43 @@ Using `--cache-type-k q4_0 --cache-type-v q4_0` reduces KV cache VRAM by ~75% vs
 
 ### Performance
 
-Measured on NVIDIA L4 (24GB VRAM), llama.cpp `server-cuda`, KV cache q4_0, thinking disabled, single request slot.
+Measured on NVIDIA L4 (24GB VRAM), llama.cpp `server-cuda`, KV cache q4_0, `--ubatch-size 128`, thinking disabled, single request slot. All tests run on localhost (no network latency).
 
 #### Qwen3.5-35B-A3B (MoE, Q4_K_M, 20GB) vs Qwen3.5-27B Dense (Q6_K, 21GB)
 
+##### Overview
+
 | Metric | 35B-A3B (MoE) | 27B Dense | Ratio |
 |--------|---------------|-----------|-------|
-| **Max Context (no mmproj)** | **256K** (22.4 GB VRAM) | **71K** (22.2 GB VRAM) | **3.6x** |
-| Prefill (5K tokens) | 1,877 tok/s | 557 tok/s | **3.4x** |
-| Decode | 67 tok/s | 10 tok/s | **6.7x** |
-| TTFT (short prompt) | ~67 ms | ~235 ms | **3.5x** |
+| **Max Context (no mmproj)** | **256K** (21.8 GB VRAM) | **71K** (22.2 GB VRAM) | **3.6x** |
+| Active Params / Token | 3B / 35B | 27B / 27B | - |
+| GGUF File Size | 20 GB (Q4_K_M) | 21 GB (Q6_K) | ~same |
 
-**Why the difference:**
-- **35B-A3B (hybrid MoE)**: Only 10 of 40 layers use full attention (need KV cache), the other 30 use GDN (linear, no KV cache) → can push to model's native max 256K
-- **27B Dense**: All 28 layers need KV cache → maxes out at **71K** with `--ubatch-size 128` (reduces compute buffer overhead)
+##### Inference Performance
+
+| Test | Prompt Tokens | 35B Prefill | 35B Decode | 35B TTFT | 27B Prefill | 27B Decode | 27B TTFT | Wall Speedup |
+|------|---------------|-------------|------------|----------|-------------|------------|----------|-------------|
+| Short (→50 tok) | 20 | 292 tok/s | 70 tok/s | 83 ms | 85 tok/s | 10 tok/s | 334 ms | **6.5x** |
+| Medium (→200 tok) | 1,914 | 1,721 tok/s | 68 tok/s | 1,127 ms | 483 tok/s | 10 tok/s | 4,062 ms | **5.7x** |
+| 5K (→200 tok) | 4,954 | 1,781 tok/s | 66 tok/s | 2,011 ms | 486 tok/s | 10 tok/s | 6,626 ms | **5.3x** |
+| Gen 1000 tok | 21 | 261 tok/s | 68 tok/s | 95 ms | 80 tok/s | 10 tok/s | 363 ms | **6.7x** |
+| Long ctx stress | 201K / 66K | 521 tok/s | 24 tok/s | - | 343 tok/s | 8 tok/s | - | - |
+
+##### Summary
+
+- **Decode**: 35B-A3B is **6.7x faster** (67 vs 10 tok/s) - MoE activates only 3B of 35B params per token
+- **TTFT**: 35B-A3B is **4x faster** (83ms vs 334ms on short prompts)
+- **Prefill**: 35B-A3B is **3.7x faster** (1,781 vs 486 tok/s at 5K tokens)
+- **Context**: 35B-A3B supports 256K (model native max) vs 27B Dense at 71K
+- **Long context**: 35B-A3B handles 200K tokens; decode slows to 24 tok/s (still 3x faster than 27B at 66K)
+- **Quality**: No measurable difference on reasoning tasks (both Qwen3.5 family)
+
+##### Why the difference
+
+- **35B-A3B (hybrid MoE)**: Only 10 of 40 layers use full attention (need KV cache), the other 30 use GDN (linear, no KV cache) - can push to model's native max 256K
+- **27B Dense**: All 28 layers need KV cache - maxes out at 71K with `--ubatch-size 128`
 - Both use `--cache-type-k q4_0 --cache-type-v q4_0` (4-bit KV cache quantization)
-- Without `--ubatch-size` tuning, 27B dense OOMs above 56K during large prompt prefill due to compute buffer overhead
-- `--ubatch-size 128` trades ~20% prefill speed (440→338 tok/s) for 27% more context (56K→71K)
-
-The MoE variant activates only 3B parameters per token (of 35B total), while the 27B dense model runs all 27B parameters. Despite similar GGUF file sizes (~20-21GB), the MoE architecture delivers 3-7x better throughput and 3.8x longer context on L4.
-
-#### Raw Timings (35B-A3B, ctx 98K)
-
-| Metric | Value |
-|--------|-------|
-| Prefill | ~1980 tok/s (2316 tok in 1.17s) |
-| Decode | 69.3 tok/s |
-
-### Reasoning Quality Comparison
-
-Tested with a multi-step math riddle (sheep problem requiring tracking state across 3 operations). Both models generated 2000 tokens.
-
-| Config | Time | Thinking | Result |
-|--------|------|----------|--------|
-| 35B-A3B OFF | 30.3s | - | ✅ Steps 1-2 correct, ❌ verbose, no clear final answer |
-| 35B-A3B ON | 30.3s | 6636 chars | ⚠️ Answer truncated (thinking consumed max_tokens) |
-| 27B Dense OFF | 200.4s | - | ✅ Steps 1-2 correct, ❌ verbose, no clear final answer |
-| 27B Dense ON | 200.4s | 6499 chars | ⚠️ Answer truncated (thinking consumed max_tokens) |
-
-**Findings:**
-- **No quality difference**: Both models produce nearly identical reasoning and get stuck on the same edge case (odd-number division)
-- **Speed advantage**: 35B-A3B is **6.6x faster** (30.3s vs 200.4s) for identical output quality
-- **Thinking mode**: Generates internal reasoning but causes answer truncation; thinking OFF is more reliable for complete answers
+- `--ubatch-size 128` reduces compute buffer overhead during large prompt prefill (without it, 27B OOMs above 56K)
 
 ## Known Issues / Pitfalls
 
