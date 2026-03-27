@@ -164,6 +164,7 @@ The L4 has 22,383 MiB (~22 GB) usable VRAM. Model weights (Q4_K_M, 20GB) + mmpro
 | ctx=98K, parallel=1, KV q4_0 | ~540 MB | OK | **Current config**. With mmproj loaded. |
 | ctx=131K, parallel=1, KV q4_0 | ~720 MB | OK | May be tight with mmproj. |
 | ctx=180K, parallel=1, KV q4_0 | ~990 MB | Borderline | Would need to drop mmproj. |
+| ctx=256K, parallel=1, KV q4_0, no mmproj | ~1200 MB | OK (21.8 GB) | Model native max. No multimodal. |
 | ctx=32K, parallel=1, KV fp16 | 640 MB | OK | Safe fallback. |
 | ctx=32K, parallel=4, KV fp16 | ~2560 MB | OOM | Not feasible with mmproj. |
 
@@ -179,6 +180,8 @@ Using `--cache-type-k q4_0 --cache-type-v q4_0` reduces KV cache VRAM by ~75% vs
 ### Performance
 
 Measured on NVIDIA L4 (24GB VRAM), llama.cpp `server-cuda`, KV cache q4_0, `--ubatch-size 128`, thinking disabled, single request slot. All tests run on localhost (no network latency).
+
+![Benchmark](benchmark.png)
 
 #### Qwen3.5-35B-A3B (MoE, Q4_K_M, 20GB) vs Qwen3.5-27B Dense (Q6_K, 21GB)
 
